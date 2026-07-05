@@ -1,0 +1,5 @@
+name: astrbot_plugin_gpt_image
+desc: "GPT Image 2 画图插件 - 支持通过聊天自然调用画图，Astra 自动识别画图需求并生成图片"
+author: Astra
+repo: ""
+version: 1.0.0

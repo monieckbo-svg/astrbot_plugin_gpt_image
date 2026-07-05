@@ -1,0 +1,38 @@
+{
+  "image_provider": {
+    "description": "选择用于画图的模型提供商（chat模式下使用，image模式下可留空）",
+    "type": "string",
+    "default": "",
+    "_special": "select_provider"
+  },
+  "model": {
+    "description": "画图模型名称（留空则使用提供商默认模型）",
+    "type": "string",
+    "default": "gpt-image-2"
+  },
+  "timeout": {
+    "description": "画图请求超时时间（秒）",
+    "type": "int",
+    "default": 120
+  },
+  "api_mode": {
+    "description": "API模式：chat = 走AstrBot模型提供商(chat/completions)，image = 直接请求images/generations端点",
+    "type": "string",
+    "default": "chat"
+  },
+  "image_api_base": {
+    "description": "image模式专用：中转站地址（如 https://xxx.com，不要带/v1/images/generations）",
+    "type": "string",
+    "default": ""
+  },
+  "image_api_key": {
+    "description": "image模式专用：中转站API Key",
+    "type": "string",
+    "default": ""
+  },
+  "image_size": {
+    "description": "生成图片分辨率：2k = 2048x2048（默认），1k = 1024x1024。若API不支持2k会自动降级为1k。",
+    "type": "string",
+    "default": "2k"
+  }
+}

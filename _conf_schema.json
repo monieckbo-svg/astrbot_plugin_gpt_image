@@ -1,14 +1,27 @@
 {
-  "image_provider": {
-    "description": "选择用于画图的模型提供商（chat模式下使用，image模式下可留空）",
+  "image_provider_1": {
+    "description": "画图提供商·第1顺位（首选）",
     "type": "string",
-    "default": "",
-    "_special": "select_provider"
+    "_special": "select_provider",
+    "default": ""
   },
-  "model": {
-    "description": "画图模型名称（留空则使用提供商默认模型）",
+  "image_provider_2": {
+    "description": "画图提供商·第2顺位（第1顺位失败时自动顶上，留空跳过）",
     "type": "string",
-    "default": "gpt-image-2"
+    "_special": "select_provider",
+    "default": ""
+  },
+  "image_provider_3": {
+    "description": "画图提供商·第3顺位（第2顺位失败时自动顶上，留空跳过）",
+    "type": "string",
+    "_special": "select_provider",
+    "default": ""
+  },
+  "image_provider_4": {
+    "description": "画图提供商·第4顺位（第3顺位失败时自动顶上，留空跳过）",
+    "type": "string",
+    "_special": "select_provider",
+    "default": ""
   },
   "timeout": {
     "description": "画图请求超时时间（秒）",

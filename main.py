@@ -20,8 +20,18 @@ class GPTImagePlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         self.config = config
-        self.image_provider_id = config.get("image_provider", "")
-        self.model = config.get("model", "gpt-image-2")
+        # 画图提供商顺位列表：image_provider_1..4，第1个失败自动切第2个
+        # 兼容旧配置键 image_provider（作为无新配置时的第1顺位）
+        ids = []
+        for i in range(1, 5):
+            pid = (config.get(f"image_provider_{i}") or "").strip()
+            if pid:
+                ids.append(pid)
+        if not ids:
+            legacy = (config.get("image_provider") or "").strip()
+            if legacy:
+                ids.append(legacy)
+        self.image_provider_ids = ids
         self.timeout = config.get("timeout", 120)
         self.last_image_url = {}
         self.api_mode = config.get("api_mode", "chat")
@@ -54,17 +64,24 @@ class GPTImagePlugin(Star):
         if removed:
             logger.info(f"GPT Image: 清理了 {removed} 张过期临时图")
 
-    async def _get_image_provider(self, event: AstrMessageEvent):
-        provider_id = self.image_provider_id
-        if provider_id:
+    async def _get_image_providers(self, event: AstrMessageEvent):
+        """按顺位取画图提供商列表 [(顺位, id, provider), ...]，供轮询failover。
+        配置的顺位全不可用时，回退当前会话默认提供商。"""
+        result = []
+        for order, pid in enumerate(self.image_provider_ids, 1):
             try:
-                prov = await self.context.provider_manager.get_provider_by_id(provider_id)
+                prov = await self.context.provider_manager.get_provider_by_id(pid)
                 if prov:
-                    return prov
-                logger.warning(f"未找到 ID 为 {provider_id} 的模型提供商，将使用当前会话提供商")
+                    result.append((order, pid, prov))
+                    continue
+                logger.warning(f"GPT Image: 未找到第{order}顺位提供商 [{pid}]，跳过")
             except Exception as e:
-                logger.warning(f"获取模型提供商失败: {e}，将使用当前会话提供商")
-        return self.context.get_using_provider(umo=event.unified_msg_origin)
+                logger.warning(f"GPT Image: 获取第{order}顺位提供商 [{pid}] 失败: {e}，跳过")
+        if not result:
+            prov = self.context.get_using_provider(umo=event.unified_msg_origin)
+            if prov:
+                result.append((1, "当前会话默认", prov))
+        return result
 
     def _image_to_base64(self, file_path: str) -> tuple[str, str]:
         ext = os.path.splitext(file_path)[1].lower()
@@ -257,7 +274,7 @@ class GPTImagePlugin(Star):
         # 提前拿好 provider（后台任务里没有 event 可用）
         prov = None
         if self.api_mode == "chat":
-            prov = await self._get_image_provider(event)
+            prov = await self._get_image_providers(event)
             if not prov:
                 return (
                     "[内部状态-请勿原样复述] 未找到可用的画图模型提供商。"
@@ -311,7 +328,7 @@ class GPTImagePlugin(Star):
 
         prov = None
         if self.api_mode == "chat":
-            prov = await self._get_image_provider(event)
+            prov = await self._get_image_providers(event)
             if not prov:
                 return (
                     "[内部状态-请勿原样复述] 未找到可用的画图模型提供商。"
@@ -340,55 +357,70 @@ class GPTImagePlugin(Star):
             f"（修改指令摘要供你参考：{new_prompt[:80]}）"
         )
 
-    async def _call_image_api(self, provider, prompt: str) -> str | None:
+    async def _call_image_api(self, providers, prompt: str) -> str | None:
         if self.api_mode == "image":
             result = await self._call_image_api_with_size(prompt, self.image_size)
             if result is None and self.image_size == "2048x2048":
                 logger.warning("2k image failed, falling back to 1024x1024...")
                 result = await self._call_image_api_with_size(prompt, "1024x1024")
             return result
-        else:
-            kwargs = {}
-            if self.model:
-                kwargs["model"] = self.model
-            llm_resp = await asyncio.wait_for(
-                provider.text_chat(prompt=prompt, **kwargs),
-                timeout=self.timeout,
-            )
-            content = llm_resp.completion_text or ""
-            logger.info(f"API 返回 content: {content[:200]}...")
-            if "失败" in content or "error" in content.lower():
-                logger.error(f"API 返回错误: {content}")
-                return None
-            # Handle base64 data URI in markdown image format
-            b64_pattern = r"!\[.*?\]\(data:image/(?:png|jpeg|webp|gif);base64,([A-Za-z0-9+/=\n]+)\)"
-            b64_match = re.search(b64_pattern, content)
-            if b64_match:
-                try:
-                    b64_data = b64_match.group(1).replace("\n", "")
-                    tmp_dir = os.path.join(os.path.dirname(__file__), "tmp")
-                    os.makedirs(tmp_dir, exist_ok=True)
-                    file_path = os.path.join(tmp_dir, f"chat_b64_{id(prompt)}.png")
-                    with open(file_path, "wb") as f:
-                        f.write(base64.b64decode(b64_data))
-                    logger.info(f"Decoded base64 image to {file_path}")
-                    return file_path
-                except Exception as e:
-                    logger.error(f"Failed to decode base64 image: {e}")
-
-            img_pattern = r"!\[.*?\]\((https?://[^\s\)]+)\)"
-            match = re.search(img_pattern, content)
-            if match:
-                return match.group(1)
-            dl_pattern = r"\[.*?下载.*?\]\((https?://[^\s\)]+)\)"
-            match = re.search(dl_pattern, content)
-            if match:
-                return match.group(1)
-            url_pattern = r"(https?://[^\s\)\\\"]+\.(?:png|jpg|jpeg|webp|gif))"
-            match = re.search(url_pattern, content)
-            if match:
-                return match.group(1)
+        # chat模式：按顺位轮询，第N个失败自动切下一个
+        if not providers:
+            logger.error("GPT Image: 没有可用的画图提供商")
             return None
+        for order, pid, prov in providers:
+            try:
+                logger.info(f"GPT Image: → 第{order}顺位 [{pid}] 开始画图")
+                result = await self._chat_draw_once(prov, prompt)
+                if result:
+                    logger.info(f"GPT Image: ✓ 本张图由第{order}顺位 [{pid}] 画出")
+                    return result
+                logger.warning(f"GPT Image: ✗ 第{order}顺位 [{pid}] 未返回图片，切换下一顺位")
+            except Exception as e:
+                logger.warning(f"GPT Image: ✗ 第{order}顺位 [{pid}] 失败: {e}，切换下一顺位")
+        logger.error("GPT Image: 所有顺位提供商全部失败")
+        return None
+
+    async def _chat_draw_once(self, provider, prompt: str) -> str | None:
+        """单个提供商的一次画图尝试（chat模式），失败返回None或抛异常"""
+        llm_resp = await asyncio.wait_for(
+            provider.text_chat(prompt=prompt),
+            timeout=self.timeout,
+        )
+        content = llm_resp.completion_text or ""
+        logger.info(f"API 返回 content: {content[:200]}...")
+        if "失败" in content or "error" in content.lower():
+            logger.error(f"API 返回错误: {content}")
+            return None
+        # Handle base64 data URI in markdown image format
+        b64_pattern = r"!\[.*?\]\(data:image/(?:png|jpeg|webp|gif);base64,([A-Za-z0-9+/=\n]+)\)"
+        b64_match = re.search(b64_pattern, content)
+        if b64_match:
+            try:
+                b64_data = b64_match.group(1).replace("\n", "")
+                tmp_dir = os.path.join(os.path.dirname(__file__), "tmp")
+                os.makedirs(tmp_dir, exist_ok=True)
+                file_path = os.path.join(tmp_dir, f"chat_b64_{id(prompt)}.png")
+                with open(file_path, "wb") as f:
+                    f.write(base64.b64decode(b64_data))
+                logger.info(f"Decoded base64 image to {file_path}")
+                return file_path
+            except Exception as e:
+                logger.error(f"Failed to decode base64 image: {e}")
+
+        img_pattern = r"!\[.*?\]\((https?://[^\s\)]+)\)"
+        match = re.search(img_pattern, content)
+        if match:
+            return match.group(1)
+        dl_pattern = r"\[.*?下载.*?\]\((https?://[^\s\)]+)\)"
+        match = re.search(dl_pattern, content)
+        if match:
+            return match.group(1)
+        url_pattern = r"(https?://[^\s\)\\\"]+\.(?:png|jpg|jpeg|webp|gif))"
+        match = re.search(url_pattern, content)
+        if match:
+            return match.group(1)
+        return None
 
     async def _call_image_api_with_size(self, prompt: str, size: str) -> str | None:
         """Call image API with specified size, return file path or URL."""
@@ -397,7 +429,8 @@ class GPTImagePlugin(Star):
             "Authorization": f"Bearer {self.image_api_key}",
             "Content-Type": "application/json"
         }
-        payload = {"model": self.model, "prompt": prompt, "n": 1, "size": size}
+        # image直连模式专用：model为该端点必填参数，固定用gpt-image-2
+        payload = {"model": "gpt-image-2", "prompt": prompt, "n": 1, "size": size}
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.post(url, json=payload, headers=headers,

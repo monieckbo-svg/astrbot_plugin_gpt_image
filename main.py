@@ -167,13 +167,17 @@ class GPTImagePlugin(Star):
             result = await self._call_image_api(prov, prompt)
 
             if result:
-                self.last_image_url[session_id] = {"url": result, "prompt": prompt, "ts": time.time()}
+                # 网络图先落地本地再发：避免 NapCat 去拉图床链接时网络错误发不出，
+                # 落地后 last_image_url 也存本地路径，qzone 等取图直读更稳；下载失败退回甩链接保底
+                local = result if os.path.isfile(result) else await self._download_image(result, session_id)
+                to_send = local or result
+                self.last_image_url[session_id] = {"url": to_send, "prompt": prompt, "ts": time.time()}
 
                 # 1. 主动推送图片（带重试）
-                if os.path.isfile(result):
-                    img = Image.fromFileSystem(result)
+                if os.path.isfile(to_send):
+                    img = Image.fromFileSystem(to_send)
                 else:
-                    img = Image.fromURL(result)
+                    img = Image.fromURL(to_send)
                 await self._retry_send(umo, MessageChain(chain=[img]), max_retries=3, delay=2.0)
 
                 # 2. 主动推送折叠的 prompt（合并转发）

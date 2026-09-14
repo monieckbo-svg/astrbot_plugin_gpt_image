@@ -4,6 +4,7 @@ import json
 import base64
 import aiohttp
 import asyncio
+import time
 from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult, MessageChain
 from astrbot.api.star import Context, Star, register
 from astrbot.api.message_components import Image, Plain, Node
@@ -166,7 +167,7 @@ class GPTImagePlugin(Star):
             result = await self._call_image_api(prov, prompt)
 
             if result:
-                self.last_image_url[session_id] = {"url": result, "prompt": prompt}
+                self.last_image_url[session_id] = {"url": result, "prompt": prompt, "ts": time.time()}
 
                 # 1. 主动推送图片（带重试）
                 if os.path.isfile(result):

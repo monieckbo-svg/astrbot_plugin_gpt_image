@@ -459,30 +459,41 @@ class GPTImagePlugin(Star):
             logger.error(f"Image API exception with size {size}: {e}")
         return None
 
-    async def _download_image(self, url: str, session_id: str) -> str | None:
-        try:
-            tmp_dir = os.path.join(os.path.dirname(__file__), "tmp")
-            os.makedirs(tmp_dir, exist_ok=True)
-            ext = ".webp"
-            if ".png" in url:
-                ext = ".png"
-            elif ".jpg" in url or ".jpeg" in url:
-                ext = ".jpg"
-            file_path = os.path.join(
-                tmp_dir, f"{session_id.replace(':', '_')}_{id(url)}{ext}"
-            )
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
-                    if resp.status == 200:
-                        with open(file_path, "wb") as f:
-                            f.write(await resp.read())
-                        return file_path
-                    else:
-                        logger.error(f"图片下载失败 ({resp.status}): {url}")
-                        return None
-        except Exception as e:
-            logger.error(f"图片下载异常: {e}")
-            return None
+    async def _download_image(self, url: str, session_id: str, retries: int = 4) -> str | None:
+        tmp_dir = os.path.join(os.path.dirname(__file__), "tmp")
+        os.makedirs(tmp_dir, exist_ok=True)
+        ext = ".webp"
+        if ".png" in url:
+            ext = ".png"
+        elif ".jpg" in url or ".jpeg" in url:
+            ext = ".jpg"
+        file_path = os.path.join(
+            tmp_dir, f"{session_id.replace(':', '_')}_{id(url)}{ext}"
+        )
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                          "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        # 首尔直连图床时通时断，多试几次趁通的窗口把图抓下来
+        for attempt in range(1, retries + 1):
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(
+                        url, headers=headers, timeout=aiohttp.ClientTimeout(total=30)
+                    ) as resp:
+                        if resp.status == 200:
+                            with open(file_path, "wb") as f:
+                                f.write(await resp.read())
+                            if attempt > 1:
+                                logger.info(f"图片下载成功(第{attempt}次): {url[:60]}")
+                            return file_path
+                        logger.error(f"图片下载 HTTP {resp.status} (第{attempt}/{retries}次): {url[:60]}")
+            except Exception as e:
+                logger.error(f"图片下载异常 (第{attempt}/{retries}次)({type(e).__name__}): {e}")
+            if attempt < retries:
+                await asyncio.sleep(attempt * 1.5)  # 递增退避 1.5s/3s/4.5s
+        logger.error(f"图片下载重试{retries}次仍失败: {url[:60]}")
+        return None
 
     async def terminate(self):
         # 插件卸载/重载时取消所有未完成的后台任务，避免悬挂
